@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hand Tracking Game - Star Catcher</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1>Star Catcher</h1>
+    <p>Use your index finger to control the paddle!</p>
+    
+    <div id="game-container">
+        <!-- The video element shows the webcam feed -->
+        <video id="webcam" autoplay playsinline></video>
+        <!-- The canvas is where we draw the game (paddle, stars, etc.) -->
+        <canvas id="game-canvas"></canvas>
+    </div>
+
+    <div id="ui-container">
+        <p>Score: <span id="score">0</span></p>
+        <p>Lives: <span id="lives">3</span></p>
+    </div>
+    
+    <div id="loading" class="info-overlay">
+        <p>Loading Hand Tracking Model...</p>
+    </div>
+    <div id="game-over" class="info-overlay" style="display: none;">
+        <p>Game Over!</p>
+        <button id="restart-button">Play Again</button>
+    </div>
+
+    <!-- MediaPipe Vision Tasks Library -->
+    <script type="module" src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/vision_bundle.js"></script>
+    <!-- Our Game Logic -->
+    <script type="module" src="script.js"></script>
+</body>
+</html>
