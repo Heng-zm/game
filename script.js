@@ -3,204 +3,276 @@ import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@m
 const video = document.getElementById("webcam");
 const canvas = document.getElementById("game-canvas");
 const ctx = canvas.getContext("2d");
-const gameContainer = document.getElementById("game-container");
-const loadingMessage = document.getElementById("loading");
-const scoreDisplay = document.getElementById("score");
-const livesDisplay = document.getElementById("lives");
-const gameOverDisplay = document.getElementById("game-over");
-const restartButton = document.getElementById("restart-button");
+const startScreen = document.getElementById("start-screen");
+const gameOverScreen = document.getElementById("game-over");
+const scoreEl = document.getElementById("score");
+const livesContainer = document.getElementById("lives-bar");
+const startBtn = document.getElementById("start-btn");
+const restartBtn = document.getElementById("restart-btn");
+const loadingText = document.getElementById("loading");
 
+// Game State
+let handLandmarker;
+let isGameRunning = false;
+let lastVideoTime = -1;
 let score = 0;
 let lives = 3;
-let gameOver = false;
-let handLandmarker;
-let lastVideoTime = -1;
+let speedMultiplier = 1;
 
-// Player object (positions will be set dynamically)
-const player = {
-    x: 0,
-    y: 0,
-    width: 80, // Slightly smaller for mobile
-    height: 15,
-    color: "#61dafb"
-};
+// Objects
+const paddle = { x: 0, y: 0, width: 100, height: 15, color: "#00ffff" };
+let items = []; // Holds both stars and bombs
+let particles = []; // Explosion effects
 
-const stars = [];
-const starRadius = 10;
-const starSpeed = 3;
-
-// --- 1. Hand Tracking Setup ---
+// Asset Loading
 const createHandLandmarker = async () => {
-    const vision = await FilesetResolver.forVisionTasks(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
-    );
-    handLandmarker = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: {
-            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
-            delegate: "GPU",
-        },
-        runningMode: "VIDEO",
-        numHands: 1
-    });
-    loadingMessage.style.display = "none";
-    enableCam();
-};
-
-// --- 2. Webcam Setup (Front Camera & Resizing) ---
-const enableCam = () => {
-    if (!navigator.mediaDevices?.getUserMedia) {
-        alert("Camera not supported");
-        return;
-    }
-
-    // Constraints: Prefer front camera, ideal resolution
-    const constraints = {
-        video: {
-            facingMode: "user", // "user" = Front Camera, "environment" = Back Camera
-            width: { ideal: 640 },
-            height: { ideal: 480 }
-        }
-    };
-
-    navigator.mediaDevices.getUserMedia(constraints)
-        .then((stream) => {
-            video.srcObject = stream;
-            video.addEventListener("loadeddata", () => {
-                resizeGame(); // Adjust canvas size to match camera
-                predictWebcam();
-            });
-        })
-        .catch((err) => {
-            console.error(err);
-            alert("Camera denied or not found. Ensure HTTPS/localhost.");
+    try {
+        const vision = await FilesetResolver.forVisionTasks(
+            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+        );
+        handLandmarker = await HandLandmarker.createFromOptions(vision, {
+            baseOptions: {
+                modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+                delegate: "GPU",
+            },
+            runningMode: "VIDEO",
+            numHands: 1
         });
+        loadingText.style.display = "none";
+        startBtn.style.display = "block";
+    } catch (error) {
+        loadingText.textContent = "Error: " + error.message;
+    }
 };
 
-// --- 3. Resize Logic (Crucial for Mobile) ---
-function resizeGame() {
-    if (!video.videoWidth) return;
+const startCamera = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) return false;
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }
+        });
+        video.srcObject = stream;
+        return new Promise(resolve => video.onloadeddata = resolve);
+    } catch (err) {
+        alert("Camera blocked. Please allow access.");
+        return false;
+    }
+};
 
-    // Set canvas internal resolution to match the raw video feed
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+// --- Game Logic ---
 
-    // Adjust container aspect ratio to match video
-    // This prevents the video from looking stretched
-    const aspectRatio = video.videoWidth / video.videoHeight;
-    gameContainer.style.aspectRatio = `${aspectRatio}`;
-
-    // Reset player position to bottom center
-    player.x = canvas.width / 2 - player.width / 2;
-    player.y = canvas.height - 40;
+class Particle {
+    constructor(x, y, color) {
+        this.x = x;
+        this.y = y;
+        this.color = color;
+        this.size = Math.random() * 4 + 2;
+        this.speedX = Math.random() * 6 - 3;
+        this.speedY = Math.random() * 6 - 3;
+        this.life = 1.0; // 100% opacity
+    }
+    update() {
+        this.x += this.speedX;
+        this.y += this.speedY;
+        this.life -= 0.03; // Fade out
+    }
+    draw() {
+        ctx.globalAlpha = Math.max(0, this.life);
+        ctx.fillStyle = this.color;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1.0;
+    }
 }
 
-// Handle screen rotation
-window.addEventListener('resize', () => {
-    // Optional: add logic here if you need to handle dynamic window resizing
-    // Usually video.loadeddata handles the initial setup enough
-});
-
-// --- 4. Game Logic ---
-function spawnStar() {
-    stars.push({
-        x: Math.random() * canvas.width,
-        y: -starRadius,
-        color: `hsl(${Math.random() * 60 + 200}, 100%, 70%)`
+function spawnItem() {
+    const isBomb = Math.random() < 0.25; // 25% chance of bomb
+    items.push({
+        x: Math.random() * (canvas.width - 20) + 10,
+        y: -30,
+        type: isBomb ? 'bomb' : 'star',
+        size: isBomb ? 15 : 10,
+        speed: (Math.random() * 2 + 2) * speedMultiplier
     });
+}
+
+function createExplosion(x, y, color) {
+    for (let i = 0; i < 10; i++) {
+        particles.push(new Particle(x, y, color));
+    }
 }
 
 function updateGame() {
-    if (gameOver) return;
+    if (!isGameRunning) return;
 
-    for (let i = stars.length - 1; i >= 0; i--) {
-        const star = stars[i];
-        star.y += starSpeed;
+    // 1. Difficulty Scaling
+    speedMultiplier = 1 + (score / 50);
 
-        // Collision
+    // 2. Spawn Items
+    if (Math.random() < 0.02 * speedMultiplier) spawnItem();
+
+    // 3. Update Items
+    for (let i = items.length - 1; i >= 0; i--) {
+        let item = items[i];
+        item.y += item.speed;
+
+        // Collision Check (Simple box collision)
         if (
-            star.y + starRadius > player.y &&
-            star.x > player.x &&
-            star.x < player.x + player.width
+            item.y + item.size >= paddle.y &&
+            item.y - item.size <= paddle.y + paddle.height &&
+            item.x >= paddle.x &&
+            item.x <= paddle.x + paddle.width
         ) {
-            score++;
-            scoreDisplay.textContent = score;
-            stars.splice(i, 1);
-        } 
-        else if (star.y > canvas.height) {
-            lives--;
-            livesDisplay.textContent = lives;
-            stars.splice(i, 1);
-            if (lives <= 0) endGame();
+            // Hit!
+            if (item.type === 'star') {
+                score += 10;
+                createExplosion(item.x, item.y, "#00ffff");
+            } else {
+                lives--;
+                createExplosion(item.x, item.y, "#ff0055");
+                updateLivesUI();
+                if (lives <= 0) gameOver();
+            }
+            items.splice(i, 1);
+        }
+        // Missed item
+        else if (item.y > canvas.height) {
+            items.splice(i, 1);
+            if (item.type === 'star') {
+                // Optional: Lose points for missing stars? 
+                // For now, we just let them go.
+            }
         }
     }
 
-    if (Math.random() < 0.03) spawnStar();
+    // 4. Update Particles
+    for (let i = particles.length - 1; i >= 0; i--) {
+        particles[i].update();
+        if (particles[i].life <= 0) particles.splice(i, 1);
+    }
+
+    scoreEl.innerText = score;
 }
 
 function drawGame() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Player
-    ctx.fillStyle = player.color;
-    ctx.fillRect(player.x, player.y, player.width, player.height);
-    
-    // Stars
-    for (const star of stars) {
-        ctx.beginPath();
-        ctx.arc(star.x, star.y, starRadius, 0, Math.PI * 2);
-        ctx.fillStyle = star.color;
-        ctx.fill();
+    // Draw Paddle (Glowing)
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = paddle.color;
+    ctx.fillStyle = paddle.color;
+    ctx.fillRect(paddle.x, paddle.y, paddle.width, paddle.height);
+    ctx.shadowBlur = 0;
+
+    // Draw Items
+    for (let item of items) {
+        if (item.type === 'star') {
+            // Draw Blue Orb
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = "#00ffff";
+            ctx.fillStyle = "#ffffff";
+            ctx.beginPath();
+            ctx.arc(item.x, item.y, item.size, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+        } else {
+            // Draw Red Asteroid
+            ctx.fillStyle = "#ff0055";
+            ctx.beginPath();
+            ctx.moveTo(item.x, item.y - item.size);
+            ctx.lineTo(item.x + item.size, item.y + item.size);
+            ctx.lineTo(item.x - item.size, item.y + item.size);
+            ctx.fill();
+        }
+    }
+
+    // Draw Particles
+    for (let p of particles) p.draw();
+}
+
+function updateLivesUI() {
+    livesContainer.innerHTML = '';
+    for(let i=0; i<lives; i++) {
+        const pip = document.createElement('div');
+        pip.className = 'life-pip';
+        livesContainer.appendChild(pip);
     }
 }
 
-function endGame() {
-    gameOver = true;
-    gameOverDisplay.style.display = "flex";
+function gameOver() {
+    isGameRunning = false;
+    document.getElementById('final-score').innerText = score;
+    gameOverScreen.style.display = 'flex';
 }
 
-restartButton.addEventListener("click", () => {
+function resetGame() {
     score = 0;
     lives = 3;
-    stars.length = 0;
-    gameOver = false;
-    scoreDisplay.textContent = score;
-    livesDisplay.textContent = lives;
-    gameOverDisplay.style.display = "none";
+    speedMultiplier = 1;
+    items = [];
+    particles = [];
+    isGameRunning = true;
+    scoreEl.innerText = "0";
+    updateLivesUI();
+    
+    startScreen.style.display = "none";
+    gameOverScreen.style.display = "none";
+    
+    // Resize once to be safe
+    resizeCanvas();
     gameLoop();
-});
+}
 
-const predictWebcam = async () => {
-    // Draw video to canvas (Mirrored)
-    ctx.save();
-    ctx.scale(-1, 1);
-    ctx.translate(-canvas.width, 0);
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    ctx.restore();
+// --- Tracking & Loop ---
 
-    let nowInMs = Date.now();
-    if (video.currentTime !== lastVideoTime) {
+async function predictWebcam() {
+    if (video.videoWidth > 0 && video.currentTime !== lastVideoTime) {
         lastVideoTime = video.currentTime;
-        const results = await handLandmarker.detectForVideo(video, nowInMs);
+        const startTime = performance.now();
+        const results = await handLandmarker.detectForVideo(video, startTime);
 
         if (results.landmarks && results.landmarks.length > 0) {
-            const landmarks = results.landmarks[0];
-            const indexFingerTip = landmarks[8];
+            const indexTip = results.landmarks[0][8];
             
-            // Map 0-1 coordinates to canvas width
-            const targetX = (1 - indexFingerTip.x) * canvas.width - (player.width / 2);
+            // Convert normalized coordinates (0-1) to canvas pixels
+            // Note: (1 - x) because video is mirrored
+            const targetX = (1 - indexTip.x) * canvas.width - (paddle.width / 2);
             
-            // Smooth movement
-            player.x += (targetX - player.x) * 0.2;
+            // Smooth "Lerp" movement (makes it feel less jittery)
+            paddle.x += (targetX - paddle.x) * 0.3;
         }
     }
     
-    if (!gameOver) window.requestAnimationFrame(gameLoop);
-};
-
-function gameLoop() {
-    updateGame();
-    drawGame();
-    predictWebcam();
+    if (isGameRunning) requestAnimationFrame(predictWebcam);
 }
 
+function gameLoop() {
+    if (!isGameRunning) return;
+    updateGame();
+    drawGame();
+    requestAnimationFrame(gameLoop);
+}
+
+function resizeCanvas() {
+    if(video.videoWidth) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        paddle.y = canvas.height - 40;
+    }
+}
+
+// --- Initialization ---
+
+startBtn.addEventListener("click", async () => {
+    startBtn.innerText = "Accessing Camera...";
+    await startCamera();
+    resizeCanvas();
+    resetGame();
+    predictWebcam();
+});
+
+restartBtn.addEventListener("click", resetGame);
+
+// Start
 createHandLandmarker();
