@@ -1,41 +1,35 @@
-// Import necessary modules from MediaPipe
-import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/vision_bundle.js";
+import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/vision_bundle.mjs";
 
-// --- DOM and Canvas Setup ---
 const video = document.getElementById("webcam");
 const canvas = document.getElementById("game-canvas");
 const ctx = canvas.getContext("2d");
+const gameContainer = document.getElementById("game-container");
 const loadingMessage = document.getElementById("loading");
 const scoreDisplay = document.getElementById("score");
 const livesDisplay = document.getElementById("lives");
 const gameOverDisplay = document.getElementById("game-over");
 const restartButton = document.getElementById("restart-button");
 
-// Set canvas dimensions
-canvas.width = 640;
-canvas.height = 480;
-
-// --- Game State Variables ---
 let score = 0;
 let lives = 3;
 let gameOver = false;
 let handLandmarker;
 let lastVideoTime = -1;
 
-// --- Game Objects ---
+// Player object (positions will be set dynamically)
 const player = {
-    x: canvas.width / 2 - 50,
-    y: canvas.height - 30,
-    width: 100,
-    height: 20,
+    x: 0,
+    y: 0,
+    width: 80, // Slightly smaller for mobile
+    height: 15,
     color: "#61dafb"
 };
 
 const stars = [];
-const starRadius = 15;
-const starSpeed = 2;
+const starRadius = 10;
+const starSpeed = 3;
 
-// --- Hand Tracking Setup ---
+// --- 1. Hand Tracking Setup ---
 const createHandLandmarker = async () => {
     const vision = await FilesetResolver.forVisionTasks(
         "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
@@ -46,48 +40,83 @@ const createHandLandmarker = async () => {
             delegate: "GPU",
         },
         runningMode: "VIDEO",
-        numHands: 1 // Track only one hand
+        numHands: 1
     });
     loadingMessage.style.display = "none";
-    startGame(); // Start the game after model is loaded
+    enableCam();
 };
 
-// --- Webcam Setup ---
+// --- 2. Webcam Setup (Front Camera & Resizing) ---
 const enableCam = () => {
-    if (!handLandmarker) {
-        console.log("Wait! HandLandmarker not loaded yet.");
+    if (!navigator.mediaDevices?.getUserMedia) {
+        alert("Camera not supported");
         return;
     }
 
-    navigator.mediaDevices.getUserMedia({ video: true })
+    // Constraints: Prefer front camera, ideal resolution
+    const constraints = {
+        video: {
+            facingMode: "user", // "user" = Front Camera, "environment" = Back Camera
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+        }
+    };
+
+    navigator.mediaDevices.getUserMedia(constraints)
         .then((stream) => {
             video.srcObject = stream;
-            video.addEventListener("loadedmetadata", predictWebcam);
+            video.addEventListener("loadeddata", () => {
+                resizeGame(); // Adjust canvas size to match camera
+                predictWebcam();
+            });
         })
         .catch((err) => {
             console.error(err);
-            alert("Please enable webcam access to play.");
+            alert("Camera denied or not found. Ensure HTTPS/localhost.");
         });
 };
 
-// --- Game Logic ---
+// --- 3. Resize Logic (Crucial for Mobile) ---
+function resizeGame() {
+    if (!video.videoWidth) return;
+
+    // Set canvas internal resolution to match the raw video feed
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    // Adjust container aspect ratio to match video
+    // This prevents the video from looking stretched
+    const aspectRatio = video.videoWidth / video.videoHeight;
+    gameContainer.style.aspectRatio = `${aspectRatio}`;
+
+    // Reset player position to bottom center
+    player.x = canvas.width / 2 - player.width / 2;
+    player.y = canvas.height - 40;
+}
+
+// Handle screen rotation
+window.addEventListener('resize', () => {
+    // Optional: add logic here if you need to handle dynamic window resizing
+    // Usually video.loadeddata handles the initial setup enough
+});
+
+// --- 4. Game Logic ---
 function spawnStar() {
     stars.push({
         x: Math.random() * canvas.width,
         y: -starRadius,
-        color: `hsl(${Math.random() * 60 + 200}, 100%, 70%)` // Shades of blue/purple
+        color: `hsl(${Math.random() * 60 + 200}, 100%, 70%)`
     });
 }
 
 function updateGame() {
     if (gameOver) return;
 
-    // Move stars down
     for (let i = stars.length - 1; i >= 0; i--) {
         const star = stars[i];
         star.y += starSpeed;
 
-        // Collision detection with paddle
+        // Collision
         if (
             star.y + starRadius > player.y &&
             star.x > player.x &&
@@ -95,43 +124,32 @@ function updateGame() {
         ) {
             score++;
             scoreDisplay.textContent = score;
-            stars.splice(i, 1); // Remove caught star
+            stars.splice(i, 1);
         } 
-        // Star missed
         else if (star.y > canvas.height) {
             lives--;
             livesDisplay.textContent = lives;
-            stars.splice(i, 1); // Remove missed star
-            if (lives <= 0) {
-                endGame();
-            }
+            stars.splice(i, 1);
+            if (lives <= 0) endGame();
         }
     }
 
-    // Spawn new stars periodically
-    if (Math.random() < 0.03) {
-        spawnStar();
-    }
+    if (Math.random() < 0.03) spawnStar();
 }
 
 function drawGame() {
-    // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Draw player paddle
+    // Player
     ctx.fillStyle = player.color;
     ctx.fillRect(player.x, player.y, player.width, player.height);
-    ctx.strokeStyle = "white";
-    ctx.strokeRect(player.x, player.y, player.width, player.height);
-
-    // Draw stars
+    
+    // Stars
     for (const star of stars) {
         ctx.beginPath();
         ctx.arc(star.x, star.y, starRadius, 0, Math.PI * 2);
         ctx.fillStyle = star.color;
         ctx.fill();
-        ctx.strokeStyle = "white";
-        ctx.stroke();
     }
 }
 
@@ -140,7 +158,7 @@ function endGame() {
     gameOverDisplay.style.display = "flex";
 }
 
-function restartGame() {
+restartButton.addEventListener("click", () => {
     score = 0;
     lives = 3;
     stars.length = 0;
@@ -148,57 +166,41 @@ function restartGame() {
     scoreDisplay.textContent = score;
     livesDisplay.textContent = lives;
     gameOverDisplay.style.display = "none";
-    gameLoop(); // Restart the game loop
-}
+    gameLoop();
+});
 
-restartButton.addEventListener("click", restartGame);
-
-// --- Main Prediction Loop ---
 const predictWebcam = async () => {
-    // Mirror the video feed on the canvas
+    // Draw video to canvas (Mirrored)
     ctx.save();
     ctx.scale(-1, 1);
     ctx.translate(-canvas.width, 0);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     ctx.restore();
 
-    // Perform hand detection
-    const nowInMs = Date.now();
+    let nowInMs = Date.now();
     if (video.currentTime !== lastVideoTime) {
         lastVideoTime = video.currentTime;
         const results = await handLandmarker.detectForVideo(video, nowInMs);
 
         if (results.landmarks && results.landmarks.length > 0) {
             const landmarks = results.landmarks[0];
-            // Get the coordinate of the index finger tip (landmark #8)
             const indexFingerTip = landmarks[8];
             
-            // Map the normalized coordinate (0.0 - 1.0) to the canvas width
-            // We use (1 - x) because the video is mirrored
-            const newPlayerX = (1 - indexFingerTip.x) * canvas.width - (player.width / 2);
-
-            // Update player position smoothly
-            player.x += (newPlayerX - player.x) * 0.2;
+            // Map 0-1 coordinates to canvas width
+            const targetX = (1 - indexFingerTip.x) * canvas.width - (player.width / 2);
+            
+            // Smooth movement
+            player.x += (targetX - player.x) * 0.2;
         }
     }
     
-    // Continue the loop if the game is not over
-    if (!gameOver) {
-        window.requestAnimationFrame(gameLoop);
-    }
+    if (!gameOver) window.requestAnimationFrame(gameLoop);
 };
 
-// --- Game Loop ---
 function gameLoop() {
     updateGame();
     drawGame();
     predictWebcam();
 }
 
-// --- Start the Application ---
-function startGame() {
-    enableCam();
-}
-
-// Initialize the hand landmarker when the script loads
 createHandLandmarker();
